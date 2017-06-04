@@ -5,9 +5,8 @@ using namespace metal;
 #define OPTIMIZE 1
 
 
-kernel void im2col_c11bc86fe77290c624886ebd52e1e88ff9cb3655ad3bfada8b15ad55(const device float *param_buffer[[buffer(0)]],
-                          device float *data_buffer[[buffer(1)]],
-                          const device int * meta_buffer [[buffer(2)]],
+kernel void im2col_858c9514ade9c693815ef0f9e305c4163be5a260628a57c4e859aba9(device float *data_buffer[[buffer(0)]],
+                          const device int * meta_buffer [[buffer(1)]],
                           ushort index_thread[[thread_position_in_threadgroup]],
                           ushort index_group[[threadgroup_position_in_grid]])
 {
@@ -26,7 +25,6 @@ kernel void im2col_c11bc86fe77290c624886ebd52e1e88ff9cb3655ad3bfada8b15ad55(cons
     const int C1 = meta_buffer[3];
 #endif
 
-    // const int N = meta_buffer[2];
     const int H1 = meta_buffer[4];
     const int W1 = meta_buffer[5];
     const int H2 = meta_buffer[6];
@@ -93,9 +91,8 @@ kernel void im2col_c11bc86fe77290c624886ebd52e1e88ff9cb3655ad3bfada8b15ad55(cons
 }
 
 
-kernel void sgemm_1fe1c908701210c37c7cdbeb4c16e81d8255a13579dd647fe858078f(const device float *weight_buffer[[buffer(0)]],
-                          device float *data_buffer[[buffer(1)]],
-                          const device int * meta_buffer [[buffer(2)]],
+kernel void sgemm_82723318500752c4d8b8a37251a0f3ed2d22f057bc57de350386037d(device float *data_buffer[[buffer(0)]],
+                          const device int * meta_buffer [[buffer(1)]],
                           ushort index[[thread_index_in_threadgroup]],
                           ushort2 group_position[[threadgroup_position_in_grid]])
 {
@@ -127,11 +124,11 @@ kernel void sgemm_1fe1c908701210c37c7cdbeb4c16e81d8255a13579dd647fe858078f(const
 
 #if K_DIVIDABLE_BY_8 && M_DIVIDABLE_BY_64  && N_DIVIDABLE_BY_64 && !TRANSPOSE_A && TRANSPOSE_B && OPTIMIZE
     const device float4 *load_target4 = (index & 32) 
-        ? (const device float4 *)(weight_buffer + meta_buffer[1]) 
+        ? (const device float4 *)(data_buffer + meta_buffer[1]) 
         : (const device float4 *)(data_buffer + meta_buffer[0]);
 #else
     const device float *load_target = (index & 32) 
-        ? (weight_buffer + meta_buffer[1]) 
+        ? (data_buffer + meta_buffer[1]) 
         : (data_buffer + meta_buffer[0]);
 #endif
 
@@ -394,7 +391,7 @@ kernel void sgemm_1fe1c908701210c37c7cdbeb4c16e81d8255a13579dd647fe858078f(const
 #if OPTIMIZE && N_DIVIDABLE_BY_64
     #if WITH_BIAS
         float4 b[2];
-        const device float4 *bias4 = (const device float4 *)(weight_buffer + meta_buffer[3]);
+        const device float4 *bias4 = (const device float4 *)(data_buffer + meta_buffer[3]);
         b[0] = bias4[group_position.y * 16 + n_offset * 2 + 0];
         b[1] = bias4[group_position.y * 16 + n_offset * 2 + 1];
     #endif
@@ -436,7 +433,7 @@ kernel void sgemm_1fe1c908701210c37c7cdbeb4c16e81d8255a13579dd647fe858078f(const
         }
 #else
     #if WITH_BIAS
-        const device float *bias = weight_buffer + meta_buffer[3];
+        const device float *bias = data_buffer + meta_buffer[3];
         float b[8];
         for (int n_sub = 0; n_sub < 8; n_sub++)
         {
@@ -495,53 +492,116 @@ kernel void sgemm_1fe1c908701210c37c7cdbeb4c16e81d8255a13579dd647fe858078f(const
 }
 
 
-kernel void axiswisescale_eb0047e7bd89ea7055f72ebafeb790e891bb2505194856bd8fe5e84d(const device float *weight_buffer[[buffer(0)]],
-                          device float *data_buffer[[buffer(1)]],
-                          const device int * meta_buffer [[buffer(2)]],
+kernel void axiswisescale_a85e6b4d2971660454c297bb92b02e2c4755aeafa1cb33a583e3828d(device float *data_buffer[[buffer(0)]],
+                          const device int * meta_buffer [[buffer(1)]],
                           uint index[[thread_position_in_grid]],
                           uint num_threads[[threads_per_grid]])
 {
+#define FLAG_D1_EQUAL_1 0
+#define FLAG_D3_EQUAL_1 1
+
     const device float *X = data_buffer + meta_buffer[0];
-    device float *Y = data_buffer + meta_buffer[1];
-    const device float *S = weight_buffer + meta_buffer[2];
-    const int N = meta_buffer[3];
-    const int C = meta_buffer[4];
-  
-    for (int gid = index; gid < N; gid += num_threads) {
-        int c = gid % C;
+    const device float *S = data_buffer + meta_buffer[1];
+    device float *Y = data_buffer + meta_buffer[2];
 
-        float result = X[gid] * S[c];
+#if !OPTIMIZE || !FLAG_D1_EQUAL_1
+    const int D1 = meta_buffer[3];
+#endif
 
-        Y[gid] = result;
+    const int D2 = meta_buffer[4];
+
+#if !OPTIMIZE || !FLAG_D3_EQUAL_1
+    const int D3 = meta_buffer[5];
+#endif
+
+#if OPTIMIZE && FLAG_D3_EQUAL_1
+    #if OPTIMIZE && FLAG_D1_EQUAL_1
+        for (int gid = index; gid < D2; gid += num_threads) {
+            const int d2 = gid;
+    #else
+        for (int gid = index; gid < D1 * D2; gid += num_threads) {
+            const int d2 = gid % D2;
+    #endif
+
+#else
+
+    #if OPTIMIZE && FLAG_D1_EQUAL_1
+        for (int gid = index; gid < D2 * D3; gid += num_threads) {
+            const int d2 = gid / D3 % D2;
+
+    #else
+        for (int gid = index; gid < D1 * D2 * D3; gid += num_threads) {
+            const int d2 = gid / D3 % D2;
+    #endif
+
+#endif
+
+        float v = X[gid] * S[d2];
+
+        Y[gid] = v;
     }
+
+#undef FLAG_D1_EQUAL_1
+#undef FLAG_D3_EQUAL_1
 }
 
 
-kernel void axiswisebias_6be2df9cf1526331046f94fd7a124df8004489b3081b9db2c7e0fa03(const device float *weight_buffer[[buffer(0)]],
-                          device float *data_buffer[[buffer(1)]],
-                          const device int * meta_buffer [[buffer(2)]],
+kernel void axiswisebias_9d13c2038dfa2384dc8582319b06143da5a92a809634116baddd0b6a(device float *data_buffer[[buffer(0)]],
+                          const device int * meta_buffer [[buffer(1)]],
                           uint index[[thread_position_in_grid]],
                           uint num_threads[[threads_per_grid]])
 {
-    const device float *X = data_buffer + meta_buffer[0];
-    device float *Y = data_buffer + meta_buffer[1];
-    const device float *B = weight_buffer + meta_buffer[2];
-    const int N = meta_buffer[3];
-    const int C = meta_buffer[4];
-  
-    for (int gid = index; gid < N * C; gid += num_threads) {
-        int c = gid % C;
-        int n = gid / C;
+#define FLAG_D1_EQUAL_1 0
+#define FLAG_D3_EQUAL_1 1
 
-        float result = X[gid] + B[c];
-        Y[n * C + c] = result;
+    const device float *X = data_buffer + meta_buffer[0];
+    const device float *B = data_buffer + meta_buffer[1];
+    device float *Y = data_buffer + meta_buffer[2];
+
+#if !OPTIMIZE || !FLAG_D1_EQUAL_1
+    const int D1 = meta_buffer[3];
+#endif
+
+    const int D2 = meta_buffer[4];
+
+#if !OPTIMIZE || !FLAG_D3_EQUAL_1
+    const int D3 = meta_buffer[5];
+#endif
+
+#if OPTIMIZE && FLAG_D3_EQUAL_1
+    #if OPTIMIZE && FLAG_D1_EQUAL_1
+        for (int gid = index; gid < D2; gid += num_threads) {
+            const int d2 = gid;
+    #else
+        for (int gid = index; gid < D1 * D2; gid += num_threads) {
+            const int d2 = gid % D2;
+    #endif
+
+#else
+
+    #if OPTIMIZE && FLAG_D1_EQUAL_1
+        for (int gid = index; gid < D2 * D3; gid += num_threads) {
+            const int d2 = gid / D3 % D2;
+    
+    #else
+        for (int gid = index; gid < D1 * D2 * D3; gid += num_threads) {
+            const int d2 = gid / D3 % D2;
+    #endif
+
+#endif
+
+        float v = X[gid] + B[d2];
+
+        Y[gid] = v;
     }
+
+#undef FLAG_D1_EQUAL_1
+#undef FLAG_D3_EQUAL_1
 }
 
 
-kernel void im2col_094f568353bf9de7c01e0b777df297bf4afc40425d719b9b676a1d9f(const device float *param_buffer[[buffer(0)]],
-                          device float *data_buffer[[buffer(1)]],
-                          const device int * meta_buffer [[buffer(2)]],
+kernel void im2col_b062ef1357dc50ca7053d06e2be286ae1360ef7fa6d45aad8b3dbdd1(device float *data_buffer[[buffer(0)]],
+                          const device int * meta_buffer [[buffer(1)]],
                           ushort index_thread[[thread_position_in_threadgroup]],
                           ushort index_group[[threadgroup_position_in_grid]])
 {
@@ -560,7 +620,6 @@ kernel void im2col_094f568353bf9de7c01e0b777df297bf4afc40425d719b9b676a1d9f(cons
     const int C1 = meta_buffer[3];
 #endif
 
-    // const int N = meta_buffer[2];
     const int H1 = meta_buffer[4];
     const int W1 = meta_buffer[5];
     const int H2 = meta_buffer[6];
@@ -627,9 +686,8 @@ kernel void im2col_094f568353bf9de7c01e0b777df297bf4afc40425d719b9b676a1d9f(cons
 }
 
 
-kernel void sgemm_7bb39dea9313ec8d8e4c2c50047d68337ba2b05833316191856f2f17(const device float *weight_buffer[[buffer(0)]],
-                          device float *data_buffer[[buffer(1)]],
-                          const device int * meta_buffer [[buffer(2)]],
+kernel void sgemm_1598b4c215130d4712c4e5721fcbbe4059e14a0c471754f92dfb5bb1(device float *data_buffer[[buffer(0)]],
+                          const device int * meta_buffer [[buffer(1)]],
                           ushort index[[thread_index_in_threadgroup]],
                           ushort2 group_position[[threadgroup_position_in_grid]])
 {
@@ -661,11 +719,11 @@ kernel void sgemm_7bb39dea9313ec8d8e4c2c50047d68337ba2b05833316191856f2f17(const
 
 #if K_DIVIDABLE_BY_8 && M_DIVIDABLE_BY_64  && N_DIVIDABLE_BY_64 && !TRANSPOSE_A && TRANSPOSE_B && OPTIMIZE
     const device float4 *load_target4 = (index & 32) 
-        ? (const device float4 *)(weight_buffer + meta_buffer[1]) 
+        ? (const device float4 *)(data_buffer + meta_buffer[1]) 
         : (const device float4 *)(data_buffer + meta_buffer[0]);
 #else
     const device float *load_target = (index & 32) 
-        ? (weight_buffer + meta_buffer[1]) 
+        ? (data_buffer + meta_buffer[1]) 
         : (data_buffer + meta_buffer[0]);
 #endif
 
@@ -928,7 +986,7 @@ kernel void sgemm_7bb39dea9313ec8d8e4c2c50047d68337ba2b05833316191856f2f17(const
 #if OPTIMIZE && N_DIVIDABLE_BY_64
     #if WITH_BIAS
         float4 b[2];
-        const device float4 *bias4 = (const device float4 *)(weight_buffer + meta_buffer[3]);
+        const device float4 *bias4 = (const device float4 *)(data_buffer + meta_buffer[3]);
         b[0] = bias4[group_position.y * 16 + n_offset * 2 + 0];
         b[1] = bias4[group_position.y * 16 + n_offset * 2 + 1];
     #endif
@@ -970,7 +1028,7 @@ kernel void sgemm_7bb39dea9313ec8d8e4c2c50047d68337ba2b05833316191856f2f17(const
         }
 #else
     #if WITH_BIAS
-        const device float *bias = weight_buffer + meta_buffer[3];
+        const device float *bias = data_buffer + meta_buffer[3];
         float b[8];
         for (int n_sub = 0; n_sub < 8; n_sub++)
         {
@@ -1029,9 +1087,8 @@ kernel void sgemm_7bb39dea9313ec8d8e4c2c50047d68337ba2b05833316191856f2f17(const
 }
 
 
-kernel void im2col_884fd9f360ddda90bf2cf46891d08c8646216406a876e59098baf6e0(const device float *param_buffer[[buffer(0)]],
-                          device float *data_buffer[[buffer(1)]],
-                          const device int * meta_buffer [[buffer(2)]],
+kernel void im2col_9534045c27dfe34e7cccfd9420d35bc2389ae6668fcc2cee4fc25eea(device float *data_buffer[[buffer(0)]],
+                          const device int * meta_buffer [[buffer(1)]],
                           ushort index_thread[[thread_position_in_threadgroup]],
                           ushort index_group[[threadgroup_position_in_grid]])
 {
@@ -1050,7 +1107,6 @@ kernel void im2col_884fd9f360ddda90bf2cf46891d08c8646216406a876e59098baf6e0(cons
     const int C1 = meta_buffer[3];
 #endif
 
-    // const int N = meta_buffer[2];
     const int H1 = meta_buffer[4];
     const int W1 = meta_buffer[5];
     const int H2 = meta_buffer[6];
@@ -1117,9 +1173,8 @@ kernel void im2col_884fd9f360ddda90bf2cf46891d08c8646216406a876e59098baf6e0(cons
 }
 
 
-kernel void sgemm_d2120e4054f06f47109f63cd135af4cf5af06fd36eb3fc1661c88712(const device float *weight_buffer[[buffer(0)]],
-                          device float *data_buffer[[buffer(1)]],
-                          const device int * meta_buffer [[buffer(2)]],
+kernel void sgemm_de92eadbb41e4990802a9b4643d888d62551ef998c21e4779a7fd66e(device float *data_buffer[[buffer(0)]],
+                          const device int * meta_buffer [[buffer(1)]],
                           ushort index[[thread_index_in_threadgroup]],
                           ushort2 group_position[[threadgroup_position_in_grid]])
 {
@@ -1151,11 +1206,11 @@ kernel void sgemm_d2120e4054f06f47109f63cd135af4cf5af06fd36eb3fc1661c88712(const
 
 #if K_DIVIDABLE_BY_8 && M_DIVIDABLE_BY_64  && N_DIVIDABLE_BY_64 && !TRANSPOSE_A && TRANSPOSE_B && OPTIMIZE
     const device float4 *load_target4 = (index & 32) 
-        ? (const device float4 *)(weight_buffer + meta_buffer[1]) 
+        ? (const device float4 *)(data_buffer + meta_buffer[1]) 
         : (const device float4 *)(data_buffer + meta_buffer[0]);
 #else
     const device float *load_target = (index & 32) 
-        ? (weight_buffer + meta_buffer[1]) 
+        ? (data_buffer + meta_buffer[1]) 
         : (data_buffer + meta_buffer[0]);
 #endif
 
@@ -1418,7 +1473,7 @@ kernel void sgemm_d2120e4054f06f47109f63cd135af4cf5af06fd36eb3fc1661c88712(const
 #if OPTIMIZE && N_DIVIDABLE_BY_64
     #if WITH_BIAS
         float4 b[2];
-        const device float4 *bias4 = (const device float4 *)(weight_buffer + meta_buffer[3]);
+        const device float4 *bias4 = (const device float4 *)(data_buffer + meta_buffer[3]);
         b[0] = bias4[group_position.y * 16 + n_offset * 2 + 0];
         b[1] = bias4[group_position.y * 16 + n_offset * 2 + 1];
     #endif
@@ -1460,7 +1515,7 @@ kernel void sgemm_d2120e4054f06f47109f63cd135af4cf5af06fd36eb3fc1661c88712(const
         }
 #else
     #if WITH_BIAS
-        const device float *bias = weight_buffer + meta_buffer[3];
+        const device float *bias = data_buffer + meta_buffer[3];
         float b[8];
         for (int n_sub = 0; n_sub < 8; n_sub++)
         {
@@ -1519,9 +1574,8 @@ kernel void sgemm_d2120e4054f06f47109f63cd135af4cf5af06fd36eb3fc1661c88712(const
 }
 
 
-kernel void sgemm_a9be2ab4b5e5fb537f0aa8f376574568f7fb0a432167d3f83543bf78(const device float *weight_buffer[[buffer(0)]],
-                          device float *data_buffer[[buffer(1)]],
-                          const device int * meta_buffer [[buffer(2)]],
+kernel void sgemm_ed6d29d44fa8fca55fe3895ec9437cecf2e0d0705a7ec47017e9231d(device float *data_buffer[[buffer(0)]],
+                          const device int * meta_buffer [[buffer(1)]],
                           ushort index[[thread_index_in_threadgroup]],
                           ushort2 group_position[[threadgroup_position_in_grid]])
 {
@@ -1553,11 +1607,11 @@ kernel void sgemm_a9be2ab4b5e5fb537f0aa8f376574568f7fb0a432167d3f83543bf78(const
 
 #if K_DIVIDABLE_BY_8 && M_DIVIDABLE_BY_64  && N_DIVIDABLE_BY_64 && !TRANSPOSE_A && TRANSPOSE_B && OPTIMIZE
     const device float4 *load_target4 = (index & 32) 
-        ? (const device float4 *)(weight_buffer + meta_buffer[1]) 
+        ? (const device float4 *)(data_buffer + meta_buffer[1]) 
         : (const device float4 *)(data_buffer + meta_buffer[0]);
 #else
     const device float *load_target = (index & 32) 
-        ? (weight_buffer + meta_buffer[1]) 
+        ? (data_buffer + meta_buffer[1]) 
         : (data_buffer + meta_buffer[0]);
 #endif
 
@@ -1820,7 +1874,7 @@ kernel void sgemm_a9be2ab4b5e5fb537f0aa8f376574568f7fb0a432167d3f83543bf78(const
 #if OPTIMIZE && N_DIVIDABLE_BY_64
     #if WITH_BIAS
         float4 b[2];
-        const device float4 *bias4 = (const device float4 *)(weight_buffer + meta_buffer[3]);
+        const device float4 *bias4 = (const device float4 *)(data_buffer + meta_buffer[3]);
         b[0] = bias4[group_position.y * 16 + n_offset * 2 + 0];
         b[1] = bias4[group_position.y * 16 + n_offset * 2 + 1];
     #endif
@@ -1862,7 +1916,7 @@ kernel void sgemm_a9be2ab4b5e5fb537f0aa8f376574568f7fb0a432167d3f83543bf78(const
         }
 #else
     #if WITH_BIAS
-        const device float *bias = weight_buffer + meta_buffer[3];
+        const device float *bias = data_buffer + meta_buffer[3];
         float b[8];
         for (int n_sub = 0; n_sub < 8; n_sub++)
         {
@@ -1921,16 +1975,15 @@ kernel void sgemm_a9be2ab4b5e5fb537f0aa8f376574568f7fb0a432167d3f83543bf78(const
 }
 
 
-kernel void elementwisesum_ddc83841f1d13720fab1c95ae5207cf535216a48ae9d41fa157da605(const device float *weight_buffer[[buffer(0)]],
-                          device float *data_buffer[[buffer(1)]],
-                          const device int * meta_buffer [[buffer(2)]],
+kernel void elementwisesum_d103c33fe36b055af07167b66844c3ce8295a0e0e2af5431e4584285(device float *data_buffer[[buffer(0)]],
+                          const device int * meta_buffer [[buffer(1)]],
                           uint index[[thread_position_in_grid]],
                           uint num_threads[[threads_per_grid]])
 {
 #define N_DIVIDABLE_BY_4 1
 #define HAS_INLINE 1
 
-#if N_DIVIDABLE_BY_4
+#if OPTIMIZE && N_DIVIDABLE_BY_4
     #define T_VALUE float4
 #else
     #define T_VALUE float
@@ -1973,9 +2026,8 @@ kernel void elementwisesum_ddc83841f1d13720fab1c95ae5207cf535216a48ae9d41fa157da
 }
 
 
-kernel void sgemm_0d98ffd842960aa3b91ffe4db8338ca6d8dff5ae17c5b2fe737a1019(const device float *weight_buffer[[buffer(0)]],
-                          device float *data_buffer[[buffer(1)]],
-                          const device int * meta_buffer [[buffer(2)]],
+kernel void sgemm_68d542a00349c94a278fb79d877d2de57d7ae5e77cc9f1b53176bc6b(device float *data_buffer[[buffer(0)]],
+                          const device int * meta_buffer [[buffer(1)]],
                           ushort index[[thread_index_in_threadgroup]],
                           ushort2 group_position[[threadgroup_position_in_grid]])
 {
@@ -2007,11 +2059,11 @@ kernel void sgemm_0d98ffd842960aa3b91ffe4db8338ca6d8dff5ae17c5b2fe737a1019(const
 
 #if K_DIVIDABLE_BY_8 && M_DIVIDABLE_BY_64  && N_DIVIDABLE_BY_64 && !TRANSPOSE_A && TRANSPOSE_B && OPTIMIZE
     const device float4 *load_target4 = (index & 32) 
-        ? (const device float4 *)(weight_buffer + meta_buffer[1]) 
+        ? (const device float4 *)(data_buffer + meta_buffer[1]) 
         : (const device float4 *)(data_buffer + meta_buffer[0]);
 #else
     const device float *load_target = (index & 32) 
-        ? (weight_buffer + meta_buffer[1]) 
+        ? (data_buffer + meta_buffer[1]) 
         : (data_buffer + meta_buffer[0]);
 #endif
 
@@ -2274,7 +2326,7 @@ kernel void sgemm_0d98ffd842960aa3b91ffe4db8338ca6d8dff5ae17c5b2fe737a1019(const
 #if OPTIMIZE && N_DIVIDABLE_BY_64
     #if WITH_BIAS
         float4 b[2];
-        const device float4 *bias4 = (const device float4 *)(weight_buffer + meta_buffer[3]);
+        const device float4 *bias4 = (const device float4 *)(data_buffer + meta_buffer[3]);
         b[0] = bias4[group_position.y * 16 + n_offset * 2 + 0];
         b[1] = bias4[group_position.y * 16 + n_offset * 2 + 1];
     #endif
@@ -2316,7 +2368,7 @@ kernel void sgemm_0d98ffd842960aa3b91ffe4db8338ca6d8dff5ae17c5b2fe737a1019(const
         }
 #else
     #if WITH_BIAS
-        const device float *bias = weight_buffer + meta_buffer[3];
+        const device float *bias = data_buffer + meta_buffer[3];
         float b[8];
         for (int n_sub = 0; n_sub < 8; n_sub++)
         {
@@ -2375,9 +2427,8 @@ kernel void sgemm_0d98ffd842960aa3b91ffe4db8338ca6d8dff5ae17c5b2fe737a1019(const
 }
 
 
-kernel void col2im_4acb2698e5a17440fd70c40ff9ad52a79bf489ffdf7bf17453d6b928(const device float *param_buffer[[buffer(0)]],
-                          device float *data_buffer[[buffer(1)]],
-                          const device int * meta_buffer [[buffer(2)]],
+kernel void col2im_48f303a069d52485ff00658a9cf2d255ab3375db983f34af4c39078a(device float *data_buffer[[buffer(0)]],
+                          const device int * meta_buffer [[buffer(1)]],
                           uint index[[thread_position_in_grid]],
                           uint num_threads[[threads_per_grid]])
 {
@@ -2422,9 +2473,8 @@ kernel void col2im_4acb2698e5a17440fd70c40ff9ad52a79bf489ffdf7bf17453d6b928(cons
 }
 
 
-kernel void elu_c5570868e1ef853205898365aac544f7d5b3e4f367a8cccdbf2beda5(const device float *param_buffer[[buffer(0)]],
-                          device float *data_buffer[[buffer(1)]],
-                          const device int * meta_buffer [[buffer(2)]],
+kernel void elu_d50befd10e73034e2c519f5409642b1535ccb6cf3eee51a719516a5b(device float *data_buffer[[buffer(0)]],
+                          const device int * meta_buffer [[buffer(1)]],
                           uint index[[thread_position_in_grid]],
                           uint num_threads[[threads_per_grid]])
 {
@@ -2442,9 +2492,8 @@ kernel void elu_c5570868e1ef853205898365aac544f7d5b3e4f367a8cccdbf2beda5(const d
 }
 
 
-kernel void sgemm_56f1c9d6ee847286248ba3248b17ad2991a0c71fea8d0f7cfc7fdb15(const device float *weight_buffer[[buffer(0)]],
-                          device float *data_buffer[[buffer(1)]],
-                          const device int * meta_buffer [[buffer(2)]],
+kernel void sgemm_3d43d6cb77156c84b5393d82404c97b289b5dc1b4635ac005dba254d(device float *data_buffer[[buffer(0)]],
+                          const device int * meta_buffer [[buffer(1)]],
                           ushort index[[thread_index_in_threadgroup]],
                           ushort2 group_position[[threadgroup_position_in_grid]])
 {
@@ -2476,11 +2525,11 @@ kernel void sgemm_56f1c9d6ee847286248ba3248b17ad2991a0c71fea8d0f7cfc7fdb15(const
 
 #if K_DIVIDABLE_BY_8 && M_DIVIDABLE_BY_64  && N_DIVIDABLE_BY_64 && !TRANSPOSE_A && TRANSPOSE_B && OPTIMIZE
     const device float4 *load_target4 = (index & 32) 
-        ? (const device float4 *)(weight_buffer + meta_buffer[1]) 
+        ? (const device float4 *)(data_buffer + meta_buffer[1]) 
         : (const device float4 *)(data_buffer + meta_buffer[0]);
 #else
     const device float *load_target = (index & 32) 
-        ? (weight_buffer + meta_buffer[1]) 
+        ? (data_buffer + meta_buffer[1]) 
         : (data_buffer + meta_buffer[0]);
 #endif
 
@@ -2743,7 +2792,7 @@ kernel void sgemm_56f1c9d6ee847286248ba3248b17ad2991a0c71fea8d0f7cfc7fdb15(const
 #if OPTIMIZE && N_DIVIDABLE_BY_64
     #if WITH_BIAS
         float4 b[2];
-        const device float4 *bias4 = (const device float4 *)(weight_buffer + meta_buffer[3]);
+        const device float4 *bias4 = (const device float4 *)(data_buffer + meta_buffer[3]);
         b[0] = bias4[group_position.y * 16 + n_offset * 2 + 0];
         b[1] = bias4[group_position.y * 16 + n_offset * 2 + 1];
     #endif
@@ -2785,7 +2834,7 @@ kernel void sgemm_56f1c9d6ee847286248ba3248b17ad2991a0c71fea8d0f7cfc7fdb15(const
         }
 #else
     #if WITH_BIAS
-        const device float *bias = weight_buffer + meta_buffer[3];
+        const device float *bias = data_buffer + meta_buffer[3];
         float b[8];
         for (int n_sub = 0; n_sub < 8; n_sub++)
         {
@@ -2844,9 +2893,8 @@ kernel void sgemm_56f1c9d6ee847286248ba3248b17ad2991a0c71fea8d0f7cfc7fdb15(const
 }
 
 
-kernel void tanh_4d093f262c150685bb3ba8649b1aedd8a91b1d4e42056449061f72a2(const device float *param_buffer[[buffer(0)]],
-                          device float *data_buffer[[buffer(1)]],
-                          const device int * meta_buffer [[buffer(2)]],
+kernel void tanh_2fc55acf97d5cbd1c7457355d0aca6252f752841b2bd4afcd0f01c67(device float *data_buffer[[buffer(0)]],
+                          const device int * meta_buffer [[buffer(1)]],
                           uint index[[thread_position_in_grid]],
                           uint num_threads[[threads_per_grid]])
 {
@@ -2861,9 +2909,8 @@ kernel void tanh_4d093f262c150685bb3ba8649b1aedd8a91b1d4e42056449061f72a2(const 
 }
 
 
-kernel void scalaraffine_3daf34a046eb693a4a93f810672675819980cfa4239b993889317ec5(const device float *param_buffer[[buffer(0)]],
-                          device float *data_buffer[[buffer(1)]],
-                          const device int * meta_buffer [[buffer(2)]],
+kernel void scalaraffine_f6626a64e91fbc3d7c09fc783dd77f72e19967f26ec2868af024248e(device float *data_buffer[[buffer(0)]],
+                          const device int * meta_buffer [[buffer(1)]],
                           uint index[[thread_position_in_grid]],
                           uint num_threads[[threads_per_grid]])
 {
@@ -2877,6 +2924,7 @@ kernel void scalaraffine_3daf34a046eb693a4a93f810672675819980cfa4239b993889317ec
     for (int gid = index; gid < N; gid += num_threads) {
         float result = X[gid];
         result = result * scale + bias;
+        
         Y[gid] = result;
     }
 }
